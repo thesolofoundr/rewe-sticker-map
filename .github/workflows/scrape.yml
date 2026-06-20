@@ -22,9 +22,6 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install dependencies
-        run: pip install curl-cffi
-
       - name: Run scraper
         run: python scripts/scrape.py
 
