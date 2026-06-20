@@ -93,7 +93,7 @@
     stores: results,
   };
 
-  // Try posting to our Vercel endpoint (has the GitHub token server-side)
+  // 1) Try Vercel endpoint (has GITHUB_TOKEN server-side)
   let saved = false;
   try {
     const r = await fetch('https://rewe-sticker-map.vercel.app/api/update', {
@@ -101,17 +101,20 @@
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(output),
     });
-    const d = await r.json();
-    if (d.ok) {
-      log('✅ Gespeichert! Karte aktualisiert sich in ~1 Minute.');
+    let d = {};
+    try { d = await r.json(); } catch {}
+    if (r.ok && d.ok) {
+      log('✅ Gespeichert via Vercel! Karte aktualisiert sich in ~1 Minute.');
       saved = true;
+    } else {
+      log('⚠️  Vercel-Endpunkt: HTTP ' + r.status + ' – ' + JSON.stringify(d));
     }
   } catch (e) {
-    log('⚠️  Direktes Speichern blockiert (CSP). Lade Datei herunter...');
+    log('⚠️  Vercel-Fetch fehlgeschlagen: ' + e);
   }
 
+  // Fallback: download the file
   if (!saved) {
-    // Fallback: download the file — user uploads manually to GitHub
     const blob = new Blob([JSON.stringify(output, null, 2)], { type: 'application/json' });
     const a = Object.assign(document.createElement('a'), {
       href: URL.createObjectURL(blob),
