@@ -1,18 +1,17 @@
 #!/usr/bin/env python3
 import json
 import re
-import subprocess
-import tempfile
 import time
 from datetime import datetime, timezone
 from pathlib import Path
 
+from curl_cffi import requests as cf_requests
+
 MARKET_API  = "https://www.rewe.de/api/wksmarketselection/userselections"
 STORES_FILE = Path(__file__).parent.parent / "public" / "stores.json"
 OUTPUT_FILE = Path(__file__).parent.parent / "public" / "availability.json"
-COOKIE_JAR  = Path(tempfile.gettempdir()) / "rewe_cookies.txt"
 
-UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
+UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 
 AVAIL_RE = re.compile(r'availability:\s*"([^"]+)"')
 
@@ -35,103 +34,64 @@ PRODUCTS = {
     },
 }
 
+HEADERS_HTML = {
+    "User-Agent": UA,
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "de-DE,de;q=0.9",
+    "Sec-Fetch-Dest": "document",
+    "Sec-Fetch-Mode": "navigate",
+    "Sec-Fetch-Site": "none",
+}
 
-def curl(*args) -> tuple[int, bytes]:
-    cmd = ["curl", "-s", "--max-time", "15", *args]
-    r = subprocess.run(cmd, capture_output=True)
-    return r.returncode, r.stdout
+HEADERS_API = {
+    "User-Agent": UA,
+    "Content-Type": "application/json",
+    "Accept": "application/json",
+    "Origin": "https://www.rewe.de",
+    "Sec-Fetch-Dest": "empty",
+    "Sec-Fetch-Mode": "cors",
+    "Sec-Fetch-Site": "same-origin",
+}
+
+# Session maintains cookies automatically (like a real browser)
+session = cf_requests.Session(impersonate="chrome124")
 
 
 def refresh_cf_cookies():
-    curl(
-        "-c", str(COOKIE_JAR),
-        "-H", f"User-Agent: {UA}",
-        "-H", "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "-H", "Accept-Language: de-DE,de;q=0.9",
-        "-H", "Sec-Fetch-Dest: document",
-        "-H", "Sec-Fetch-Mode: navigate",
-        "-H", "Sec-Fetch-Site: none",
-        "-L", "-o", "/dev/null" if __import__("os").name != "nt" else "NUL",
-        "https://www.rewe.de/",
-    )
+    try:
+        session.get("https://www.rewe.de/", headers=HEADERS_HTML, timeout=15)
+    except Exception as e:
+        print(f"  CF refresh error: {e}", flush=True)
 
 
 def set_market(ww_ident: str) -> bool:
-    _, out = curl(
-        "-c", str(COOKIE_JAR),
-        "-b", str(COOKIE_JAR),
-        "-H", f"User-Agent: {UA}",
-        "-H", "Content-Type: application/json",
-        "-H", "Accept: application/json",
-        "-H", "Origin: https://www.rewe.de",
-        "-H", "Sec-Fetch-Dest: empty",
-        "-H", "Sec-Fetch-Mode: cors",
-        "-H", "Sec-Fetch-Site: same-origin",
-        "-X", "POST",
-        "-d", json.dumps({
-            "selectedService": "STATIONARY",
-            "customerZipCode": None,
-            "wwIdent": ww_ident,
-        }),
-        "-w", "\n%{http_code}",
-        MARKET_API,
-    )
-    lines = out.strip().split(b"\n")
-    code = int(lines[-1]) if lines else 0
-    return code in (200, 201)
+    try:
+        r = session.post(
+            MARKET_API,
+            json={"selectedService": "STATIONARY", "customerZipCode": None, "wwIdent": ww_ident},
+            headers=HEADERS_API,
+            timeout=15,
+        )
+        return r.status_code in (200, 201)
+    except Exception:
+        return False
 
 
 def get_availability(product_url: str) -> bool | None:
-    """Returns True (in stock), False (not in stock), or None (unknown)."""
-    _, out = curl(
-        "-b", str(COOKIE_JAR),
-        "-H", f"User-Agent: {UA}",
-        "-H", "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "-H", "Accept-Language: de-DE,de;q=0.9",
-        "-H", "Sec-Fetch-Dest: document",
-        "-H", "Sec-Fetch-Mode: navigate",
-        "-H", "Sec-Fetch-Site: none",
-        "-L",
-        "-w", "\n%{http_code}",
-        product_url,
-    )
-    lines = out.split(b"\n")
-    code = int(lines[-1]) if lines else 0
-    if code != 200:
+    try:
+        r = session.get(product_url, headers=HEADERS_HTML, timeout=15)
+        if r.status_code != 200:
+            return None
+        m = AVAIL_RE.search(r.text)
+        if m:
+            val = m.group(1).lower()
+            if val == "true":
+                return True
+            if val == "false":
+                return False
+    except Exception:
         return None
-    html = b"\n".join(lines[:-1]).decode("utf-8", errors="replace")
-    m = AVAIL_RE.search(html)
-    if m:
-        val = m.group(1).lower()
-        if val == "true":
-            return True
-        if val == "false":
-            return False
     return None
-
-
-def debug_first_store(stores):
-    print("DEBUG: testing first store...", flush=True)
-    set_market(stores[0]["id"])
-    time.sleep(0.5)
-    for pid, info in PRODUCTS.items():
-        _, out = curl(
-            "-b", str(COOKIE_JAR),
-            "-H", f"User-Agent: {UA}",
-            "-H", "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            "-H", "Accept-Language: de-DE,de;q=0.9",
-            "-H", "Sec-Fetch-Dest: document", "-H", "Sec-Fetch-Mode: navigate",
-            "-H", "Sec-Fetch-Site: none", "-L",
-            "-w", "\n%{http_code}", info["url"],
-        )
-        lines = out.split(b"\n")
-        code = int(lines[-1]) if lines else 0
-        html = b"\n".join(lines[:-1]).decode("utf-8", errors="replace")
-        m = AVAIL_RE.search(html)
-        print(f"  {pid}: HTTP {code}, len={len(html)}, avail={m.group(1) if m else 'NO MATCH'}", flush=True)
-        time.sleep(0.3)
-    jar = Path(str(COOKIE_JAR))
-    print(f"  cookie jar exists={jar.exists()}, content:\n{jar.read_text(errors='replace')[-300:] if jar.exists() else 'MISSING'}", flush=True)
 
 
 def main():
@@ -140,7 +100,6 @@ def main():
 
     print("Getting fresh CF cookies...", flush=True)
     refresh_cf_cookies()
-    debug_first_store(stores)
 
     results = []
     stores_with_any = 0
@@ -187,7 +146,6 @@ def main():
     }
     OUTPUT_FILE.write_text(json.dumps(output, ensure_ascii=False), encoding="utf-8")
     print(f"\nDone. Stores with any product in stock: {stores_with_any}/{len(stores)}", flush=True)
-    print(f"Saved to {OUTPUT_FILE}", flush=True)
 
 
 if __name__ == "__main__":
