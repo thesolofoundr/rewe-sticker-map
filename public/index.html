@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Panini WM 2026 Sticker – REWE Berlin</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: #f5f5f5;
+      display: flex;
+      flex-direction: column;
+      height: 100dvh;
+    }
+
+    header {
+      background: #cc0000;
+      color: #fff;
+      padding: 12px 16px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-shrink: 0;
+      gap: 12px;
+    }
+
+    header h1 {
+      font-size: 1rem;
+      font-weight: 700;
+      line-height: 1.2;
+    }
+
+    #status-bar {
+      font-size: 0.75rem;
+      opacity: 0.85;
+      white-space: nowrap;
+    }
+
+    #legend {
+      display: flex;
+      gap: 14px;
+      font-size: 0.8rem;
+      padding: 8px 16px;
+      background: #fff;
+      border-bottom: 1px solid #ddd;
+      flex-shrink: 0;
+      flex-wrap: wrap;
+    }
+
+    .legend-item {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+    }
+
+    .dot {
+      width: 12px;
+      height: 12px;
+      border-radius: 50%;
+      display: inline-block;
+    }
+
+    .dot.green  { background: #22c55e; }
+    .dot.red    { background: #ef4444; }
+    .dot.gray   { background: #9ca3af; }
+
+    #map { flex: 1; }
+
+    #info-panel {
+      display: none;
+      position: fixed;
+      bottom: 0;
+      left: 0;
+      right: 0;
+      background: #fff;
+      border-top: 2px solid #cc0000;
+      padding: 16px;
+      z-index: 1000;
+      font-size: 0.9rem;
+    }
+
+    #info-panel h2 { font-size: 1rem; margin-bottom: 6px; }
+    #info-panel .badge {
+      display: inline-block;
+      padding: 3px 10px;
+      border-radius: 12px;
+      font-size: 0.8rem;
+      font-weight: 600;
+      margin-bottom: 8px;
+    }
+    .badge.available   { background: #dcfce7; color: #166534; }
+    .badge.unavailable { background: #fee2e2; color: #991b1b; }
+    .badge.unknown     { background: #f3f4f6; color: #374151; }
+
+    #info-panel a { color: #cc0000; font-size: 0.85rem; }
+    #info-close {
+      position: absolute;
+      top: 12px; right: 14px;
+      background: none;
+      border: none;
+      font-size: 1.3rem;
+      cursor: pointer;
+      color: #555;
+    }
+  </style>
+</head>
+<body>
+
+<header>
+  <h1>Panini WM 2026 Sticker<br><small style="font-weight:400;font-size:0.8rem">REWE Berlin Verfügbarkeit</small></h1>
+  <div id="status-bar">Lade...</div>
+</header>
+
+<div id="legend">
+  <div class="legend-item"><span class="dot green"></span> Vorrätig</div>
+  <div class="legend-item"><span class="dot red"></span> Nicht vorrätig</div>
+  <div class="legend-item"><span class="dot gray"></span> Unbekannt</div>
+</div>
+
+<div id="map"></div>
+
+<div id="info-panel">
+  <button id="info-close">✕</button>
+  <h2 id="info-name"></h2>
+  <div id="info-badge" class="badge"></div>
+  <div id="info-address"></div>
+  <br>
+  <a id="info-link" href="#" target="_blank">Zum REWE Markt →</a>
+</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+  const DATA_URL = "availability.json";
+
+  const map = L.map("map").setView([52.52, 13.405], 11);
+
+  L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+    attribution: '© <a href="https://openstreetmap.org">OpenStreetMap</a>',
+    maxZoom: 19,
+  }).addTo(map);
+
+  function makeIcon(available) {
+    const color = available === true ? "#22c55e" : available === false ? "#ef4444" : "#9ca3af";
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 32" width="24" height="32">
+      <path d="M12 0C5.37 0 0 5.37 0 12c0 9 12 20 12 20S24 21 24 12C24 5.37 18.63 0 12 0z"
+            fill="${color}" stroke="#fff" stroke-width="1.5"/>
+      <circle cx="12" cy="12" r="5" fill="#fff" opacity="0.9"/>
+    </svg>`;
+    return L.divIcon({
+      html: svg,
+      className: "",
+      iconSize: [24, 32],
+      iconAnchor: [12, 32],
+      popupAnchor: [0, -32],
+    });
+  }
+
+  const infoPanel  = document.getElementById("info-panel");
+  const infoClose  = document.getElementById("info-close");
+  const infoName   = document.getElementById("info-name");
+  const infoBadge  = document.getElementById("info-badge");
+  const infoAddr   = document.getElementById("info-address");
+  const infoLink   = document.getElementById("info-link");
+  const statusBar  = document.getElementById("status-bar");
+
+  infoClose.addEventListener("click", () => { infoPanel.style.display = "none"; });
+
+  function showInfo(store) {
+    infoName.textContent = store.address || store.id;
+    if (store.district) infoName.textContent += ` (${store.district})`;
+
+    const avail = store.available;
+    if (avail === true) {
+      infoBadge.textContent = "✓ Vorrätig";
+      infoBadge.className = "badge available";
+    } else if (avail === false) {
+      infoBadge.textContent = "✗ Nicht vorrätig";
+      infoBadge.className = "badge unavailable";
+    } else {
+      infoBadge.textContent = "? Unbekannt";
+      infoBadge.className = "badge unknown";
+    }
+
+    infoAddr.textContent = [store.address, store.postcode ? store.postcode + " Berlin" : ""].filter(Boolean).join(", ");
+    infoLink.href = store.url || "#";
+    infoPanel.style.display = "block";
+  }
+
+  async function load() {
+    try {
+      const res  = await fetch(DATA_URL + "?t=" + Date.now());
+      const data = await res.json();
+
+      const stores = data.stores;
+      const updated = new Date(data.updated);
+      const minutesAgo = Math.round((Date.now() - updated) / 60000);
+
+      let inStock = 0;
+      stores.forEach(s => { if (s.available === true) inStock++; });
+
+      statusBar.textContent = `${inStock} vorrätig · vor ${minutesAgo} Min aktualisiert`;
+
+      stores.forEach(store => {
+        if (!store.lat || !store.lng) return;
+        const marker = L.marker([store.lat, store.lng], { icon: makeIcon(store.available) });
+        marker.on("click", () => showInfo(store));
+        marker.addTo(map);
+      });
+
+    } catch (e) {
+      statusBar.textContent = "Fehler beim Laden";
+      console.error(e);
+    }
+  }
+
+  load();
+
+  // Auto-refresh every 5 minutes
+  setInterval(load, 5 * 60 * 1000);
+</script>
+</body>
+</html>

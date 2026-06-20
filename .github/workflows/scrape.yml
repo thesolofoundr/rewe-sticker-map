@@ -1,0 +1,35 @@
+name: Scrape REWE Availability
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"   # every 5 minutes
+  workflow_dispatch:         # manual trigger
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Run scraper
+        run: python scripts/scrape.py
+
+      - name: Commit & push availability.json
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add public/availability.json
+          # Only commit if the file actually changed
+          git diff --cached --quiet || git commit -m "chore: update availability $(date -u '+%H:%M UTC')"
+          git push
