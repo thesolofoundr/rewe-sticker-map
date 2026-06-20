@@ -91,12 +91,13 @@ def main():
             try:
                 resp = context.request.post(
                     MARKET_API,
-                    json={
+                    data=json.dumps({
                         "selectedService": "STATIONARY",
                         "customerZipCode": None,
                         "wwIdent": ww_ident,
-                    },
+                    }),
                     headers={
+                        "Content-Type": "application/json",
                         "Accept": "application/json",
                         "Origin": "https://www.rewe.de",
                         "Sec-Fetch-Dest": "empty",
