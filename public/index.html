@@ -39,6 +39,23 @@
       white-space: nowrap;
     }
 
+    #refresh-btn {
+      background: rgba(255,255,255,0.2);
+      border: 1px solid rgba(255,255,255,0.5);
+      color: #fff;
+      border-radius: 6px;
+      padding: 5px 10px;
+      font-size: 0.78rem;
+      cursor: pointer;
+      white-space: nowrap;
+      flex-shrink: 0;
+    }
+
+    #refresh-btn:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+
     #legend {
       display: flex;
       gap: 14px;
@@ -134,6 +151,7 @@
 <header>
   <h1>Panini WM 2026 Sticker<br><small style="font-weight:400;font-size:0.8rem">REWE Berlin Verfügbarkeit</small></h1>
   <div id="status-bar">Lade...</div>
+  <button id="refresh-btn" onclick="triggerScrape()">↻ Aktualisieren</button>
 </header>
 
 <div id="legend">
@@ -256,6 +274,20 @@
       statusBar.textContent = "Fehler beim Laden";
       console.error(e);
     }
+  }
+
+  async function triggerScrape() {
+    const btn = document.getElementById("refresh-btn");
+    btn.disabled = true;
+    btn.textContent = "⏳ Wird gestartet…";
+    try {
+      const r = await fetch("/api/trigger", { method: "POST" });
+      const d = await r.json();
+      btn.textContent = d.ok ? "✓ Gestartet (~13 Min)" : "⚠ Fehler";
+    } catch {
+      btn.textContent = "⚠ Fehler";
+    }
+    setTimeout(() => { btn.disabled = false; btn.textContent = "↻ Aktualisieren"; }, 60000);
   }
 
   load();

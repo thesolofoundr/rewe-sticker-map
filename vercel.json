@@ -1,6 +1,6 @@
 {
   "outputDirectory": "public",
   "rewrites": [
-    { "source": "/(.*)", "destination": "/$1" }
+    { "source": "/((?!api/).*)", "destination": "/$1" }
   ]
 }
