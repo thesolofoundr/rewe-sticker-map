@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 import json
-import time
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -29,7 +29,9 @@ PRODUCTS = {
     },
 }
 
-# Runs inside real Chromium — same TLS/HTTP2/fingerprint as Chrome
+AVAIL_RE = re.compile(r'availability:\s*"([^"]+)"')
+
+# Runs in real Chromium — same-origin POST, CF allows JS fetch to API endpoints
 SET_MARKET_JS = """
 async ({apiUrl, wwIdent}) => {
     try {
@@ -45,20 +47,7 @@ async ({apiUrl, wwIdent}) => {
 }
 """
 
-# Fetch product page HTML and parse availability — stays in JS to avoid passing large HTML
-GET_AVAIL_JS = """
-async (url) => {
-    try {
-        const resp = await fetch(url, {credentials: 'include'});
-        if (!resp.ok) return {status: resp.status, avail: null};
-        const html = await resp.text();
-        const m = html.match(/availability:\\s*"([^"]+)"/);
-        return {status: resp.status, avail: m ? m[1] : null};
-    } catch(e) {
-        return {status: 0, avail: null, error: String(e)};
-    }
-}
-"""
+BLOCKED_TYPES = {"image", "stylesheet", "font", "media"}
 
 
 def main():
@@ -75,7 +64,6 @@ def main():
                 "--disable-blink-features=AutomationControlled",
             ],
         )
-        # No custom UA — let Playwright use the real Chromium UA so sec-ch-ua matches
         context = browser.new_context(
             locale="de-DE",
             viewport={"width": 1280, "height": 800},
@@ -85,25 +73,21 @@ def main():
         )
 
         page = context.new_page()
-
-        try:
-            from playwright_stealth import stealth_sync
-            stealth_sync(page)
-            print("Stealth mode active", flush=True)
-        except ImportError:
-            print("playwright-stealth not available, continuing without", flush=True)
+        # Block images/CSS/fonts so page.goto() only waits for the HTML
+        page.route("**/*", lambda route: (
+            route.abort() if route.request.resource_type in BLOCKED_TYPES else route.continue_()
+        ))
 
         print("Getting CF clearance...", flush=True)
         try:
             page.goto("https://www.rewe.de/", wait_until="domcontentloaded", timeout=45000)
-            page.wait_for_timeout(3000)
+            page.wait_for_timeout(1500)
         except PWTimeout:
             print("  Warning: initial navigation timed out", flush=True)
 
         print(f"  Page URL: {page.url}", flush=True)
-        all_cookies = context.cookies()
-        relevant = [c["name"] for c in all_cookies if any(k in c["name"].lower() for k in ("cf", "wks", "websitebot", "mtc"))]
-        print(f"  Cookies after load: {relevant}", flush=True)
+        relevant = [c["name"] for c in context.cookies() if any(k in c["name"].lower() for k in ("cf", "wks", "websitebot"))]
+        print(f"  Cookies: {relevant}", flush=True)
 
         results = []
         stores_with_any = 0
@@ -111,7 +95,7 @@ def main():
         for i, store in enumerate(stores):
             ww_ident = store["id"]
 
-            # POST runs in real Chromium — no CF fingerprint mismatch
+            # POST via page.evaluate — CF allows JS fetch to API endpoints (Sec-Fetch-Dest: empty is fine for APIs)
             ok = False
             try:
                 sm = page.evaluate(SET_MARKET_JS, {"apiUrl": MARKET_API, "wwIdent": ww_ident})
@@ -131,18 +115,27 @@ def main():
                 for pid, info in PRODUCTS.items():
                     avail = None
                     try:
-                        r = page.evaluate(GET_AVAIL_JS, info["url"])
-                        raw = r.get("avail")
-                        if raw == "true":
-                            avail = True
-                        elif raw == "false":
-                            avail = False
-                        if i < 1:
-                            print(f"    {pid}: HTTP {r.get('status')}, avail={raw!r}", flush=True)
+                        # page.goto sends Sec-Fetch-Dest: document — CF allows this for HTML pages
+                        resp = page.goto(info["url"], wait_until="domcontentloaded", timeout=15000)
+                        if resp and resp.ok:
+                            html = page.content()
+                            m = AVAIL_RE.search(html)
+                            raw = m.group(1) if m else None
+                            if raw == "true":
+                                avail = True
+                            elif raw == "false":
+                                avail = False
+                            if i < 2:
+                                print(f"    {pid}: HTTP {resp.status}, avail={raw!r}", flush=True)
+                        elif resp:
+                            if i < 5:
+                                print(f"    [{i+1}] {pid}: HTTP {resp.status}", flush=True)
+                    except PWTimeout:
+                        if i < 5:
+                            print(f"    [{i+1}] {pid}: timeout", flush=True)
                     except Exception as e:
                         print(f"    [{i+1}] {pid} exception: {e}", flush=True)
                     product_avail[pid] = avail
-                    time.sleep(0.1)
                 any_in_stock = any(v is True for v in product_avail.values())
 
             if any_in_stock:
@@ -157,8 +150,6 @@ def main():
                 "available": any_in_stock,
                 "products": {pid: v for pid, v in product_avail.items()},
             })
-
-            time.sleep(0.2)
 
         page.close()
         browser.close()

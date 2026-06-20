@@ -2,7 +2,7 @@
 
 on:
   schedule:
-    - cron: "*/15 * * * *"  # every 15 minutes
+    - cron: "*/30 * * * *"  # every 30 minutes
   workflow_dispatch:         # manual trigger
 
 jobs:
@@ -24,7 +24,7 @@ jobs:
 
       - name: Install Playwright + Chromium
         run: |
-          pip install playwright playwright-stealth
+          pip install playwright
           python -m playwright install chromium --with-deps
 
       - name: Run scraper
