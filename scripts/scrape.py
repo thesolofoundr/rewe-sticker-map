@@ -110,12 +110,37 @@ def get_availability(product_url: str) -> bool | None:
     return None
 
 
+def debug_first_store(stores):
+    print("DEBUG: testing first store...", flush=True)
+    set_market(stores[0]["id"])
+    time.sleep(0.5)
+    for pid, info in PRODUCTS.items():
+        _, out = curl(
+            "-b", str(COOKIE_JAR),
+            "-H", f"User-Agent: {UA}",
+            "-H", "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "-H", "Accept-Language: de-DE,de;q=0.9",
+            "-H", "Sec-Fetch-Dest: document", "-H", "Sec-Fetch-Mode: navigate",
+            "-H", "Sec-Fetch-Site: none", "-L",
+            "-w", "\n%{http_code}", info["url"],
+        )
+        lines = out.split(b"\n")
+        code = int(lines[-1]) if lines else 0
+        html = b"\n".join(lines[:-1]).decode("utf-8", errors="replace")
+        m = AVAIL_RE.search(html)
+        print(f"  {pid}: HTTP {code}, len={len(html)}, avail={m.group(1) if m else 'NO MATCH'}", flush=True)
+        time.sleep(0.3)
+    jar = Path(str(COOKIE_JAR))
+    print(f"  cookie jar exists={jar.exists()}, content:\n{jar.read_text(errors='replace')[-300:] if jar.exists() else 'MISSING'}", flush=True)
+
+
 def main():
     stores = json.loads(STORES_FILE.read_text(encoding="utf-8"))
     print(f"Loaded {len(stores)} stores, {len(PRODUCTS)} products each", flush=True)
 
     print("Getting fresh CF cookies...", flush=True)
     refresh_cf_cookies()
+    debug_first_store(stores)
 
     results = []
     stores_with_any = 0
