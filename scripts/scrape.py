@@ -91,13 +91,12 @@ def main():
             try:
                 resp = context.request.post(
                     MARKET_API,
-                    data=json.dumps({
+                    data={
                         "selectedService": "STATIONARY",
                         "customerZipCode": None,
                         "wwIdent": ww_ident,
-                    }),
+                    },
                     headers={
-                        "Content-Type": "application/json",
                         "Accept": "application/json",
                         "Origin": "https://www.rewe.de",
                         "Sec-Fetch-Dest": "empty",
@@ -107,6 +106,8 @@ def main():
                     timeout=15000,
                 )
                 ok = resp.status in (200, 201)
+                if i < 2:
+                    print(f"  set_market HTTP {resp.status}", flush=True)
             except Exception as e:
                 print(f"  [{i+1}] set_market error: {e}", flush=True)
 
