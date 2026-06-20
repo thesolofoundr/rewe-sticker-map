@@ -77,25 +77,47 @@
       right: 0;
       background: #fff;
       border-top: 2px solid #cc0000;
-      padding: 16px;
+      padding: 16px 16px 20px;
       z-index: 1000;
       font-size: 0.9rem;
+      max-height: 55vh;
+      overflow-y: auto;
     }
 
-    #info-panel h2 { font-size: 1rem; margin-bottom: 6px; }
-    #info-panel .badge {
-      display: inline-block;
-      padding: 3px 10px;
-      border-radius: 12px;
+    #info-panel h2 { font-size: 1rem; margin-bottom: 10px; padding-right: 28px; }
+
+    .product-list { margin-bottom: 10px; }
+
+    .product-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 5px 0;
+      border-bottom: 1px solid #f0f0f0;
+      font-size: 0.85rem;
+    }
+
+    .product-row:last-child { border-bottom: none; }
+
+    .avail-icon {
+      font-size: 1rem;
+      width: 20px;
+      text-align: center;
+      flex-shrink: 0;
+    }
+
+    .avail-icon.yes  { color: #22c55e; }
+    .avail-icon.no   { color: #ef4444; }
+    .avail-icon.unk  { color: #9ca3af; }
+
+    #info-address {
       font-size: 0.8rem;
-      font-weight: 600;
+      color: #555;
       margin-bottom: 8px;
     }
-    .badge.available   { background: #dcfce7; color: #166534; }
-    .badge.unavailable { background: #fee2e2; color: #991b1b; }
-    .badge.unknown     { background: #f3f4f6; color: #374151; }
 
     #info-panel a { color: #cc0000; font-size: 0.85rem; }
+
     #info-close {
       position: absolute;
       top: 12px; right: 14px;
@@ -125,7 +147,7 @@
 <div id="info-panel">
   <button id="info-close">✕</button>
   <h2 id="info-name"></h2>
-  <div id="info-badge" class="badge"></div>
+  <div class="product-list" id="product-list"></div>
   <div id="info-address"></div>
   <br>
   <a id="info-link" href="#" target="_blank">Zum REWE Markt →</a>
@@ -161,27 +183,44 @@
   const infoPanel  = document.getElementById("info-panel");
   const infoClose  = document.getElementById("info-close");
   const infoName   = document.getElementById("info-name");
-  const infoBadge  = document.getElementById("info-badge");
+  const productList = document.getElementById("product-list");
   const infoAddr   = document.getElementById("info-address");
   const infoLink   = document.getElementById("info-link");
   const statusBar  = document.getElementById("status-bar");
 
   infoClose.addEventListener("click", () => { infoPanel.style.display = "none"; });
 
+  let productNames = {};
+
   function showInfo(store) {
     infoName.textContent = store.address || store.id;
     if (store.district) infoName.textContent += ` (${store.district})`;
 
-    const avail = store.available;
-    if (avail === true) {
-      infoBadge.textContent = "✓ Vorrätig";
-      infoBadge.className = "badge available";
-    } else if (avail === false) {
-      infoBadge.textContent = "✗ Nicht vorrätig";
-      infoBadge.className = "badge unavailable";
-    } else {
-      infoBadge.textContent = "? Unbekannt";
-      infoBadge.className = "badge unknown";
+    productList.innerHTML = "";
+    const prods = store.products || {};
+    for (const [pid, avail] of Object.entries(prods)) {
+      const name = productNames[pid] || pid;
+      const row = document.createElement("div");
+      row.className = "product-row";
+
+      const icon = document.createElement("span");
+      if (avail === true) {
+        icon.className = "avail-icon yes";
+        icon.textContent = "✓";
+      } else if (avail === false) {
+        icon.className = "avail-icon no";
+        icon.textContent = "✗";
+      } else {
+        icon.className = "avail-icon unk";
+        icon.textContent = "?";
+      }
+
+      const label = document.createElement("span");
+      label.textContent = name;
+
+      row.appendChild(icon);
+      row.appendChild(label);
+      productList.appendChild(row);
     }
 
     infoAddr.textContent = [store.address, store.postcode ? store.postcode + " Berlin" : ""].filter(Boolean).join(", ");
@@ -194,6 +233,8 @@
       const res  = await fetch(DATA_URL + "?t=" + Date.now());
       const data = await res.json();
 
+      productNames = data.products || {};
+
       const stores = data.stores;
       const updated = new Date(data.updated);
       const minutesAgo = Math.round((Date.now() - updated) / 60000);
@@ -205,7 +246,8 @@
 
       stores.forEach(store => {
         if (!store.lat || !store.lng) return;
-        const marker = L.marker([store.lat, store.lng], { icon: makeIcon(store.available) });
+        const avail = store.available === true ? true : (Object.values(store.products || {}).every(v => v === null) ? null : false);
+        const marker = L.marker([store.lat, store.lng], { icon: makeIcon(avail) });
         marker.on("click", () => showInfo(store));
         marker.addTo(map);
       });
@@ -218,8 +260,7 @@
 
   load();
 
-  // Auto-refresh every 5 minutes
-  setInterval(load, 5 * 60 * 1000);
+  setInterval(load, 15 * 60 * 1000);
 </script>
 </body>
 </html>
