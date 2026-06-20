@@ -13,7 +13,7 @@ STORES_FILE = Path(__file__).parent.parent / "public" / "stores.json"
 OUTPUT_FILE = Path(__file__).parent.parent / "public" / "availability.json"
 COOKIE_JAR  = Path(tempfile.gettempdir()) / "rewe_cookies.txt"
 
-UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
+UA = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
 AVAIL_RE = re.compile(r'availability:\s*"([^"]+)"')
 DEV_NULL = "NUL" if os.name == "nt" else "/dev/null"
 
@@ -42,15 +42,54 @@ def curl(*args) -> tuple[int, bytes]:
     return r.returncode, r.stdout
 
 
-def refresh_cf_cookies():
-    curl(
-        "-c", str(COOKIE_JAR), "-H", f"User-Agent: {UA}",
-        "-H", "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "-H", "Accept-Language: de-DE,de;q=0.9",
-        "-H", "Sec-Fetch-Dest: document", "-H", "Sec-Fetch-Mode: navigate",
-        "-H", "Sec-Fetch-Site: none", "-L", "-o", DEV_NULL,
-        "https://www.rewe.de/",
-    )
+def bootstrap_cookies():
+    """Launch real Chromium to solve CF JS challenge and write all cookies to jar."""
+    print("Launching Chromium to get CF clearance...", flush=True)
+    from playwright.sync_api import sync_playwright
+
+    with sync_playwright() as p:
+        browser = p.chromium.launch(
+            headless=True,
+            args=[
+                "--no-sandbox",
+                "--disable-setuid-sandbox",
+                "--disable-dev-shm-usage",
+                "--disable-blink-features=AutomationControlled",
+            ],
+        )
+        context = browser.new_context(
+            user_agent=UA,
+            locale="de-DE",
+            viewport={"width": 1280, "height": 800},
+        )
+        context.add_init_script(
+            "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
+        )
+        page = context.new_page()
+        try:
+            page.goto("https://www.rewe.de/", wait_until="networkidle", timeout=30000)
+            page.wait_for_timeout(2000)
+        except Exception as e:
+            print(f"  Page load note: {e}", flush=True)
+
+        cookies = context.cookies()
+        browser.close()
+
+    lines = ["# Netscape HTTP Cookie File"]
+    for c in cookies:
+        domain = c.get("domain", "")
+        incl_sub = "TRUE" if domain.startswith(".") else "FALSE"
+        if not domain.startswith("."):
+            domain = "." + domain
+        expires = max(0, int(c.get("expires", 0) or 0))
+        secure = "TRUE" if c.get("secure") else "FALSE"
+        lines.append(
+            f"{domain}\t{incl_sub}\t{c.get('path', '/')}\t{secure}\t{expires}\t{c['name']}\t{c['value']}"
+        )
+    COOKIE_JAR.write_text("\n".join(lines) + "\n")
+
+    cf_cookies = [c["name"] for c in cookies if "cf" in c["name"].lower()]
+    print(f"  Got {len(cookies)} cookies. CF-related: {cf_cookies}", flush=True)
 
 
 def set_market(ww_ident: str) -> bool:
@@ -98,19 +137,13 @@ def main():
     stores = json.loads(STORES_FILE.read_text(encoding="utf-8"))
     print(f"Loaded {len(stores)} stores, {len(PRODUCTS)} products each", flush=True)
 
-    print("Getting fresh CF cookies...", flush=True)
-    refresh_cf_cookies()
+    bootstrap_cookies()
 
     results = []
     stores_with_any = 0
 
     for i, store in enumerate(stores):
         ww_ident = store["id"]
-
-        if i > 0 and i % 40 == 0:
-            print(f"  [{i}] Refreshing CF cookies...", flush=True)
-            refresh_cf_cookies()
-            time.sleep(1)
 
         ok = set_market(ww_ident)
         if not ok:
@@ -129,7 +162,7 @@ def main():
 
         in_stock_names = [PRODUCTS[pid]["name"] for pid, v in product_avail.items() if v is True]
         label = ", ".join(in_stock_names) if in_stock_names else ("unbekannt" if not ok else "nichts")
-        print(f"[{i+1:3}/{len(stores)}] {ww_ident:8}  {store.get('address','')[:28]:28}  {label}", flush=True)
+        print(f"[{i+1:3}/{len(stores)}] {ww_ident:8}  {store.get('address', '')[:28]:28}  {label}", flush=True)
 
         results.append({
             **store,
