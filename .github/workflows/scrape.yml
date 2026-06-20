@@ -1,4 +1,4 @@
-name: Scrape REWE Availability
+﻿name: Scrape REWE Availability
 
 on:
   schedule:
@@ -24,7 +24,7 @@ jobs:
 
       - name: Install Playwright + Chromium
         run: |
-          pip install playwright
+          pip install playwright playwright-stealth
           python -m playwright install chromium --with-deps
 
       - name: Run scraper
