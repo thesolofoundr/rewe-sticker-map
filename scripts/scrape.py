@@ -109,7 +109,7 @@ def set_market(ww_ident: str) -> bool:
     return code in (200, 201)
 
 
-def get_availability(product_url: str) -> bool | None:
+def get_availability(product_url: str, _debug: bool = False) -> bool | None:
     _, out = curl(
         "-b", str(COOKIE_JAR), "-H", f"User-Agent: {UA}",
         "-H", "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
@@ -121,8 +121,14 @@ def get_availability(product_url: str) -> bool | None:
     lines = out.split(b"\n")
     code = int(lines[-1]) if lines else 0
     if code != 200:
+        if _debug:
+            print(f"      HTTP {code} — still blocked", flush=True)
         return None
     html = b"\n".join(lines[:-1]).decode("utf-8", errors="replace")
+    if _debug:
+        idx = html.find("availability")
+        snippet = html[idx:idx+120] if idx >= 0 else "(not found in HTML)"
+        print(f"      HTTP {code}, availability context: {snippet!r}", flush=True)
     m = AVAIL_RE.search(html)
     if m:
         val = m.group(1).lower()
@@ -152,8 +158,9 @@ def main():
         else:
             time.sleep(0.3)
             product_avail = {}
+            debug_this = i < 2
             for pid, info in PRODUCTS.items():
-                product_avail[pid] = get_availability(info["url"])
+                product_avail[pid] = get_availability(info["url"], _debug=debug_this)
                 time.sleep(0.3)
             any_in_stock = any(v is True for v in product_avail.values())
 
