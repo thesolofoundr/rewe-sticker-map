@@ -13,25 +13,24 @@ OUTPUT_FILE = Path(__file__).parent.parent / "public" / "availability.json"
 PRODUCTS = {
     "9444915": {
         "name": "Einzelpacket (7 Sticker)",
-        "url": "https://www.rewe.de/produkte/panini-fifa-world-cup-2026-stickerpacket/9444915",
+        "path": "/produkte/panini-fifa-world-cup-2026-stickerpacket/9444915",
     },
     "9446617": {
         "name": "Multipack (5 Tüten + 6 Sticker)",
-        "url": "https://www.rewe.de/produkte/panini-fifa-world-cup-2026-sammelsticker-multipack-5-tueten-6-sticker/9446617",
+        "path": "/produkte/panini-fifa-world-cup-2026-sammelsticker-multipack-5-tueten-6-sticker/9446617",
     },
     "7353919": {
         "name": "Mini-Multipack (4 Tüten + 4 Sticker)",
-        "url": "https://www.rewe.de/produkte/panini-fifa-world-cup-2026-sammelsticker-mini-multipack-4-tueten-4-sticker/7353919",
+        "path": "/produkte/panini-fifa-world-cup-2026-sammelsticker-mini-multipack-4-tueten-4-sticker/7353919",
     },
     "9443316": {
         "name": "Eco Blister (6 Tüten + 1 DFB)",
-        "url": "https://www.rewe.de/produkte/panini-fifa-world-cup-2026-sammelsticker-eco-blister-6-tueten-1-dfb-sticker/9443316",
+        "path": "/produkte/panini-fifa-world-cup-2026-sammelsticker-eco-blister-6-tueten-1-dfb-sticker/9443316",
     },
 }
 
-AVAIL_RE = re.compile(r'availability:\s*"([^"]+)"')
+AVAIL_RE = re.compile(r'"availability"\s*:\s*"([^"]+)"')
 
-# Runs in real Chromium — same-origin POST, CF allows JS fetch to API endpoints
 SET_MARKET_JS = """
 async ({apiUrl, wwIdent}) => {
     try {
@@ -43,6 +42,33 @@ async ({apiUrl, wwIdent}) => {
         return {ok: resp.status === 200 || resp.status === 201, status: resp.status};
     } catch(e) {
         return {ok: false, status: 0, error: String(e)};
+    }
+}
+"""
+
+# Extract Next.js build ID from __NEXT_DATA__ script tag
+GET_BUILD_JS = """
+async () => {
+    try {
+        const el = document.getElementById('__NEXT_DATA__');
+        if (el) return JSON.parse(el.textContent).buildId;
+        return null;
+    } catch(e) { return null; }
+}
+"""
+
+# Fetch a URL and search for availability value; optionally return response snippet
+FETCH_AVAIL_JS = """
+async ({url, snippet}) => {
+    try {
+        const resp = await fetch(url, {credentials: 'include'});
+        const text = await resp.text();
+        const m = text.match(/"availability":"([^"]+)"/);
+        const result = {status: resp.status, avail: m ? m[1] : null};
+        if (snippet) result.snippet = text.slice(0, 500);
+        return result;
+    } catch(e) {
+        return {status: 0, avail: null, error: String(e)};
     }
 }
 """
@@ -73,7 +99,6 @@ def main():
         )
 
         page = context.new_page()
-        # Block images/CSS/fonts so page.goto() only waits for the HTML
         page.route("**/*", lambda route: (
             route.abort() if route.request.resource_type in BLOCKED_TYPES else route.continue_()
         ))
@@ -89,13 +114,31 @@ def main():
         relevant = [c["name"] for c in context.cookies() if any(k in c["name"].lower() for k in ("cf", "wks", "websitebot"))]
         print(f"  Cookies: {relevant}", flush=True)
 
+        # Next.js data API: same data as SSR product page but served at /_next/data/{buildId}/*.json
+        # CF blocks /produkte/* by IP but may not block /_next/data/ (different path prefix)
+        build_id = page.evaluate(GET_BUILD_JS)
+        print(f"  Next.js build ID: {build_id!r}", flush=True)
+
+        use_nextjs = False
+        if build_id:
+            first_path = next(iter(PRODUCTS.values()))["path"]
+            test_url = f"https://www.rewe.de/_next/data/{build_id}{first_path}.json"
+            print(f"  Testing Next.js data API: {test_url[:80]}...", flush=True)
+            test_r = page.evaluate(FETCH_AVAIL_JS, {"url": test_url, "snippet": True})
+            print(f"  Result: HTTP {test_r.get('status')}, avail={test_r.get('avail')!r}", flush=True)
+            if test_r.get("snippet"):
+                print(f"  Snippet: {test_r['snippet'][:300]}", flush=True)
+            use_nextjs = test_r.get("status") == 200
+
+        if not use_nextjs:
+            print("  Next.js data API not accessible — all products will show as unknown", flush=True)
+
         results = []
         stores_with_any = 0
 
         for i, store in enumerate(stores):
             ww_ident = store["id"]
 
-            # POST via page.evaluate — CF allows JS fetch to API endpoints (Sec-Fetch-Dest: empty is fine for APIs)
             ok = False
             try:
                 sm = page.evaluate(SET_MARKET_JS, {"apiUrl": MARKET_API, "wwIdent": ww_ident})
@@ -107,7 +150,7 @@ def main():
             except Exception as e:
                 print(f"  [{i+1}] set_market exception: {e}", flush=True)
 
-            if not ok:
+            if not ok or not use_nextjs:
                 product_avail = {pid: None for pid in PRODUCTS}
                 any_in_stock = False
             else:
@@ -115,24 +158,15 @@ def main():
                 for pid, info in PRODUCTS.items():
                     avail = None
                     try:
-                        # page.goto sends Sec-Fetch-Dest: document — CF allows this for HTML pages
-                        resp = page.goto(info["url"], wait_until="domcontentloaded", timeout=15000)
-                        if resp and resp.ok:
-                            html = page.content()
-                            m = AVAIL_RE.search(html)
-                            raw = m.group(1) if m else None
-                            if raw == "true":
-                                avail = True
-                            elif raw == "false":
-                                avail = False
-                            if i < 2:
-                                print(f"    {pid}: HTTP {resp.status}, avail={raw!r}", flush=True)
-                        elif resp:
-                            if i < 5:
-                                print(f"    [{i+1}] {pid}: HTTP {resp.status}", flush=True)
-                    except PWTimeout:
-                        if i < 5:
-                            print(f"    [{i+1}] {pid}: timeout", flush=True)
+                        data_url = f"https://www.rewe.de/_next/data/{build_id}{info['path']}.json"
+                        r = page.evaluate(FETCH_AVAIL_JS, {"url": data_url})
+                        raw = r.get("avail")
+                        if raw == "true":
+                            avail = True
+                        elif raw == "false":
+                            avail = False
+                        if i < 2:
+                            print(f"    {pid}: HTTP {r.get('status')}, avail={raw!r}", flush=True)
                     except Exception as e:
                         print(f"    [{i+1}] {pid} exception: {e}", flush=True)
                     product_avail[pid] = avail
@@ -142,7 +176,7 @@ def main():
                 stores_with_any += 1
 
             in_stock_names = [PRODUCTS[pid]["name"] for pid, v in product_avail.items() if v is True]
-            label = ", ".join(in_stock_names) if in_stock_names else ("unbekannt" if not ok else "nichts")
+            label = ", ".join(in_stock_names) if in_stock_names else ("unbekannt" if not ok or not use_nextjs else "nichts")
             print(f"[{i+1:3}/{len(stores)}] {ww_ident:8}  {store.get('address', '')[:28]:28}  {label}", flush=True)
 
             results.append({
